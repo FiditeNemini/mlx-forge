@@ -40,6 +40,7 @@ import mlx.core as mx
 from ..convert import (
     download_hf_files,
     fmt_size,
+    load_safetensors,
     load_weights,
     process_component,
     quantize_component,
@@ -278,7 +279,7 @@ def validate(args) -> None:
     print("\n== PE Weights ==")
     pe_path = model_dir / "pe.safetensors"
     if pe_path.exists():
-        weights = mx.load(str(pe_path))
+        weights = load_safetensors(pe_path)
         keys = set(weights.keys())
         print(f"  Keys: {len(keys)}")
 

@@ -3,6 +3,7 @@
 import argparse
 import json
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 from mlx_forge.recipes.ltx_23 import add_convert_args
@@ -94,7 +95,7 @@ class TestSkipSharedConvertEffect:
 
 class TestValidateDeltaMode:
     def _write_minimal_split(self, dir: Path, *, delta: bool, variants: list[str]) -> None:
-        split = {
+        split: dict[str, Any] = {
             "format": "split",
             "model_version": "2.3.0",
             "components": [],

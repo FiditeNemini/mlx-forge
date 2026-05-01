@@ -44,13 +44,16 @@ from __future__ import annotations
 import gc
 import json
 import shutil
+from collections.abc import Callable
 from pathlib import Path
 
 import mlx.core as mx
 
 from ..convert import (
+    WeightTransform,
     download_hf_files,
     fmt_size,
+    load_safetensors,
     load_weights,
     process_component,
     quantize_component,
@@ -149,7 +152,7 @@ def _sanitize_identity(key: str) -> str:
     return key
 
 
-SANITIZERS: dict[str, object] = {
+SANITIZERS: dict[str, Callable[[str], str | None]] = {
     "transformer": _sanitize_transformer_key,
     "text_encoder": _sanitize_identity,
     "vae": _sanitize_identity,
@@ -182,7 +185,7 @@ def _vae_transform(key: str, weight: mx.array, component_name: str) -> mx.array:
     return weight
 
 
-TRANSFORMS: dict[str, object] = {
+TRANSFORMS: dict[str, WeightTransform | None] = {
     "transformer": _transformer_transform,
     "text_encoder": None,
     "vae": _vae_transform,
@@ -462,7 +465,7 @@ def validate(args) -> None:
     print("\n== Transformer Weights ==")
     tf_path = model_dir / "transformer.safetensors"
     if tf_path.exists():
-        weights = mx.load(str(tf_path))
+        weights = load_safetensors(tf_path)
         keys = set(weights.keys())
         print(f"  Keys: {len(keys)}")
         validate_no_pytorch_prefix(weights, "transformer.transformer.", result)
@@ -496,7 +499,7 @@ def validate(args) -> None:
     print("\n== Text-encoder Weights ==")
     te_path = model_dir / "text_encoder.safetensors"
     if te_path.exists():
-        weights = mx.load(str(te_path))
+        weights = load_safetensors(te_path)
         keys = set(weights.keys())
         result.check(
             not any(k.startswith("vision_tower.") for k in keys),
@@ -510,7 +513,7 @@ def validate(args) -> None:
     print("\n== VAE Weights ==")
     vae_path = model_dir / "vae.safetensors"
     if vae_path.exists():
-        weights = mx.load(str(vae_path))
+        weights = load_safetensors(vae_path)
         keys = set(weights.keys())
         print(f"  Keys: {len(keys)}")
 
@@ -563,8 +566,10 @@ def validate(args) -> None:
             # Unbroken running stats are never the 0/1 init defaults.
             import mlx.core as mx_
 
-            is_init_mean = bool(mx_.all(mean == 0).item())
-            is_init_var = bool(mx_.all(var == 1).item())
+            mean_eq_zero: mx.array = mx.equal(mean, mx.array(0, mean.dtype))
+            var_eq_one: mx.array = mx.equal(var, mx.array(1, var.dtype))
+            is_init_mean = bool(mx_.all(mean_eq_zero).item())
+            is_init_var = bool(mx_.all(var_eq_one).item())
             result.check(
                 not (is_init_mean and is_init_var),
                 "bn stats are trained (non-default)",

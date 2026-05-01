@@ -26,6 +26,7 @@ from ..convert import (
     classify_keys,
     download_hf_files,
     fmt_size,
+    load_safetensors,
     load_weights,
     process_component,
     quantize_component,
@@ -382,7 +383,7 @@ def validate(args) -> None:
     print("\n== Language Model Weights ==")
     lm_path = model_dir / "language_model.safetensors"
     if lm_path.exists():
-        weights = mx.load(str(lm_path))
+        weights = load_safetensors(lm_path)
         keys = set(weights.keys())
 
         validate_no_pytorch_prefix(weights, "language_model.model.", result)
@@ -410,7 +411,7 @@ def validate(args) -> None:
     print("\n== Vision Tower Weights ==")
     vt_path = model_dir / "vision_tower.safetensors"
     if vt_path.exists():
-        weights = mx.load(str(vt_path))
+        weights = load_safetensors(vt_path)
         keys = set(weights.keys())
 
         # Keys are prefixed "vision_tower." by design (component_prefix)
@@ -440,7 +441,7 @@ def validate(args) -> None:
     print("\n== Multimodal Projector Weights ==")
     mp_path = model_dir / "multimodal_projector.safetensors"
     if mp_path.exists():
-        weights = mx.load(str(mp_path))
+        weights = load_safetensors(mp_path)
         keys = set(weights.keys())
 
         # Verify no raw PyTorch prefix leaked through

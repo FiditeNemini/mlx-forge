@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 from pathlib import Path
+from typing import cast
 
 import mlx.core as mx
 from tqdm import tqdm
@@ -41,7 +42,7 @@ def split_model(
         raise SystemExit(1)
 
     print(f"Loading: {unified_path}")
-    all_weights = mx.load(str(unified_path))
+    all_weights = cast(dict[str, mx.array], mx.load(str(unified_path)))
     print(f"Loaded {len(all_weights)} tensors")
 
     # Group weights by output file

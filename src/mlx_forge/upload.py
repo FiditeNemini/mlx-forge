@@ -204,7 +204,7 @@ def upload_model(
             print(f"ERROR: Could not query repo '{repo_id}': {e}")
             raise SystemExit(1)
 
-        remote = {s.rfilename for s in info.siblings}
+        remote = {s.rfilename for s in (info.siblings or [])}
         if not model_dir.is_dir():
             print(f"ERROR: model directory does not exist: {model_dir}")
             raise SystemExit(1)
@@ -262,7 +262,7 @@ def upload_model(
             # Derive transformer variants and LoRA files from remote (idempotent refresh)
             try:
                 info = api.model_info(repo_id)
-                remote_files = [s.rfilename for s in info.siblings]
+                remote_files = [s.rfilename for s in (info.siblings or [])]
             except (HfHubHTTPError, OSError, ConnectionError):
                 remote_files = []  # fall through with local data only
 

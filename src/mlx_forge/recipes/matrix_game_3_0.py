@@ -27,6 +27,7 @@ import mlx.core as mx
 from ..convert import (
     download_hf_files,
     fmt_size,
+    load_safetensors,
     quantize_component,
 )
 from ..quantize import _materialize
@@ -402,7 +403,7 @@ def _convert_dit(args, download_dir: Path, output_dir: Path, component: str, hf_
 
     print(f"\nLoading {component} weights lazily from {dit_path}...")
     t0 = time.monotonic()
-    dit_weights = mx.load(dit_path)
+    dit_weights = load_safetensors(dit_path)
     print(f"  {len(dit_weights)} keys loaded (lazy) in {time.monotonic() - t0:.1f}s")
 
     print(f"\nProcessing {len(dit_weights)} {component} keys...")
@@ -785,7 +786,7 @@ def _validate_dit(
     if not dit_path.exists():
         return
 
-    weights = mx.load(str(dit_path))
+    weights = load_safetensors(dit_path)
     keys = set(weights.keys())
 
     prefix = f"{component}."
@@ -856,7 +857,7 @@ def _validate_vae(
     if not vae_path.exists():
         return
 
-    weights = mx.load(str(vae_path))
+    weights = load_safetensors(vae_path)
     keys = set(weights.keys())
 
     prefix = f"{component}."
@@ -933,7 +934,7 @@ def validate(args) -> None:
     print("\n== T5 Encoder Weights ==")
     t5_path = model_dir / "t5_encoder.safetensors"
     if t5_path.exists():
-        weights = mx.load(str(t5_path))
+        weights = load_safetensors(t5_path)
         keys = set(weights.keys())
 
         all_prefixed = all(k.startswith("t5_encoder.") for k in keys)

@@ -18,10 +18,11 @@ from __future__ import annotations
 import gc
 import json
 from pathlib import Path
+from typing import Any
 
 import mlx.core as mx
 
-from ..convert import download_hf_files, quantize_component
+from ..convert import download_hf_files, load_safetensors, quantize_component
 from ..quantize import _materialize
 from ..transpose import needs_transpose, transpose_conv
 from ..validate import (
@@ -263,7 +264,7 @@ def paint_should_quantize(key: str, weight: mx.array) -> bool:
 def fuse_dino_qkv(weights: dict[str, mx.array]) -> dict[str, mx.array]:
     """Fuse separate Q/K/V into single QKV linear."""
     fused = {}
-    pending: dict[str, dict[str, mx.array]] = {}
+    pending: dict[str, dict[tuple[str, str], mx.array]] = {}
 
     for key, val in weights.items():
         for proj in ("query", "key", "value"):
@@ -460,7 +461,7 @@ def _convert_paint(args, output_dir: Path) -> None:
     clip_path = base_dir / "image_encoder" / "model.safetensors"
     if clip_path.exists():
         print("Converting CLIP image encoder (bundled)...")
-        raw = dict(mx.load(str(clip_path)))
+        raw = load_safetensors(clip_path)
         total_weights += _convert_component(
             raw,
             sanitize_paint_clip_key,
@@ -480,7 +481,7 @@ def _convert_paint(args, output_dir: Path) -> None:
         download_hf_files(HF_REPO_DINO_GIANT, ["model.safetensors"], dl_dir)
         dino_path = dl_dir / "model.safetensors"
 
-    raw = dict(mx.load(str(dino_path)))
+    raw = load_safetensors(dino_path)
     sanitized = {}
     for key, val in raw.items():
         new_key = sanitize_paint_dino_key(key)
@@ -604,7 +605,7 @@ def _write_config_files(output_dir, config, components, args, quantize_target):
         json.dump(config, f, indent=2)
     print(f"Config written to {config_path}")
 
-    split_model = {
+    split_model: dict[str, Any] = {
         "model_type": "hunyuan3d-2.1",
         "source": "tencent/Hunyuan3D-2.1",
         "components": {name: f"{name}.safetensors" for name in config["components"]},
@@ -659,7 +660,7 @@ def _validate_shape(model_dir: Path, config: dict, result: ValidationResult) -> 
 
     result.check(config.get("dit", {}).get("depth") == 21, "DiT depth == 21")
 
-    dit_weights = dict(mx.load(str(model_dir / "dit.safetensors")))
+    dit_weights = load_safetensors(model_dir / "dit.safetensors")
     block_indices = {
         int(k.split(".")[2])
         for k in dit_weights
@@ -683,7 +684,7 @@ def _validate_paint(model_dir: Path, config: dict, result: ValidationResult) -> 
 
     result.check(config.get("paint_unet", {}).get("in_channels") == 12, "UNet in_channels == 12")
 
-    unet_w = dict(mx.load(str(model_dir / "paint_unet.safetensors")))
+    unet_w = load_safetensors(model_dir / "paint_unet.safetensors")
     result.check(any("down_blocks" in k for k in unet_w), "UNet has down_blocks")
     result.check(any("up_blocks" in k for k in unet_w), "UNet has up_blocks")
     conv_in = unet_w.get("conv_in.weight")
@@ -692,12 +693,12 @@ def _validate_paint(model_dir: Path, config: dict, result: ValidationResult) -> 
     del unet_w
     gc.collect()
 
-    vae_w = dict(mx.load(str(model_dir / "paint_vae.safetensors")))
+    vae_w = load_safetensors(model_dir / "paint_vae.safetensors")
     result.check(any("encoder" in k for k in vae_w), "VAE has encoder")
     result.check(any("decoder" in k for k in vae_w), "VAE has decoder")
     del vae_w
 
-    dino_w = dict(mx.load(str(model_dir / "paint_dino.safetensors")))
+    dino_w = load_safetensors(model_dir / "paint_dino.safetensors")
     dino_keys = list(dino_w.keys())
     result.check(any("blocks." in k for k in dino_keys), "DINOv2 has blocks")
     result.check(any("qkv" in k or "query" in k for k in dino_keys), "DINOv2 has attention")

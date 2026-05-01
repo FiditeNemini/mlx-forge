@@ -10,7 +10,7 @@ import json
 
 import mlx.core as mx
 
-from mlx_forge.convert import classify_keys, process_component
+from mlx_forge.convert import classify_keys, load_safetensors, process_component
 from mlx_forge.quantize import quantize_weights
 from mlx_forge.recipes.fish_s2 import (
     COMPONENT_PREFIX as FISH_COMPONENT_PREFIX,
@@ -200,7 +200,7 @@ class TestLtx23Pipeline:
         for comp_name in ["transformer", "connector", "vae_decoder", "vae_encoder", "vocoder"]:
             out_file = output_dir / f"{comp_name}.safetensors"
             assert out_file.exists(), f"{comp_name}.safetensors missing"
-            loaded = mx.load(str(out_file))
+            loaded = load_safetensors(out_file)
             assert len(loaded) > 0
 
     def test_key_sanitization_in_output(self, tmp_path):
@@ -223,7 +223,7 @@ class TestLtx23Pipeline:
             transform=maybe_transpose,
         )
 
-        loaded = mx.load(str(output_dir / "transformer.safetensors"))
+        loaded = load_safetensors(output_dir / "transformer.safetensors")
         output_keys = set(loaded.keys())
 
         # No PyTorch prefix should remain
@@ -259,7 +259,7 @@ class TestLtx23Pipeline:
             transform=maybe_transpose,
         )
 
-        loaded = mx.load(str(output_dir / "vae_decoder.safetensors"))
+        loaded = load_safetensors(output_dir / "vae_decoder.safetensors")
         conv_key = "vae_decoder.conv_in.weight"
         assert conv_key in loaded
 
@@ -285,7 +285,7 @@ class TestLtx23Pipeline:
             transform=maybe_transpose,
         )
 
-        loaded = mx.load(str(output_dir / "transformer.safetensors"))
+        loaded = load_safetensors(output_dir / "transformer.safetensors")
         q_key = "transformer.transformer_blocks.0.attn1.to_q.weight"
         assert q_key in loaded
         # Shape should remain (128, 128) -- no transposition
@@ -312,7 +312,7 @@ class TestLtx23Pipeline:
 
         # Load and quantize
         tf_path = output_dir / "transformer.safetensors"
-        weights = mx.load(str(tf_path))
+        weights = load_safetensors(tf_path)
         quantized = quantize_weights(
             weights, bits=8, group_size=64, should_quantize=ltx23_should_quantize
         )
@@ -320,7 +320,7 @@ class TestLtx23Pipeline:
         mx.save_safetensors(str(tf_path), quantized)
 
         # Reload and verify quantization artifacts
-        reloaded = mx.load(str(tf_path))
+        reloaded = load_safetensors(tf_path)
         q_keys = [k for k in reloaded if k.endswith(".scales")]
         b_keys = [k for k in reloaded if k.endswith(".biases")]
 
@@ -374,7 +374,7 @@ class TestLtx23Pipeline:
             transform=maybe_transpose,
         )
 
-        loaded = mx.load(str(output_dir / "connector.safetensors"))
+        loaded = load_safetensors(output_dir / "connector.safetensors")
 
         # text_embedding_projection key is kept as-is by sanitizer
         orig_key = "text_embedding_projection.aggregate_embed.weight"
@@ -434,7 +434,7 @@ class TestFishS2Pipeline:
         for comp_name in ["text_model", "audio_decoder"]:
             out_file = output_dir / f"{comp_name}.safetensors"
             assert out_file.exists(), f"{comp_name}.safetensors missing"
-            loaded = mx.load(str(out_file))
+            loaded = load_safetensors(out_file)
             assert len(loaded) > 0
 
     def test_key_sanitization_text_model(self, tmp_path):
@@ -454,7 +454,7 @@ class TestFishS2Pipeline:
             sanitizer=FISH_SANITIZERS["text_model"],
         )
 
-        loaded = mx.load(str(output_dir / "text_model.safetensors"))
+        loaded = load_safetensors(output_dir / "text_model.safetensors")
         output_keys = set(loaded.keys())
 
         # No "text_model.model." prefix should remain
@@ -482,7 +482,7 @@ class TestFishS2Pipeline:
             sanitizer=FISH_SANITIZERS["audio_decoder"],
         )
 
-        loaded = mx.load(str(output_dir / "audio_decoder.safetensors"))
+        loaded = load_safetensors(output_dir / "audio_decoder.safetensors")
         output_keys = set(loaded.keys())
 
         assert all(k.startswith("audio_decoder.") for k in output_keys)
@@ -507,13 +507,13 @@ class TestFishS2Pipeline:
         )
 
         tm_path = output_dir / "text_model.safetensors"
-        weights = mx.load(str(tm_path))
+        weights = load_safetensors(tm_path)
         quantized = quantize_weights(
             weights, bits=8, group_size=64, should_quantize=fish_s2_should_quantize
         )
         mx.save_safetensors(str(tm_path), quantized)
 
-        reloaded = mx.load(str(tm_path))
+        reloaded = load_safetensors(tm_path)
         scales = [k for k in reloaded if k.endswith(".scales")]
         biases = [k for k in reloaded if k.endswith(".biases")]
 
@@ -547,7 +547,7 @@ class TestFishS2Pipeline:
             sanitizer=FISH_SANITIZERS["audio_decoder"],
         )
 
-        loaded = mx.load(str(output_dir / "audio_decoder.safetensors"))
+        loaded = load_safetensors(output_dir / "audio_decoder.safetensors")
 
         orig_key = "audio_decoder.codebook_embeddings.weight"
         out_key = "audio_decoder.codebook_embeddings.weight"
@@ -591,7 +591,7 @@ class TestSplitPipeline:
         assert "audio_vae.safetensors" in result
 
         # connector.safetensors should have both connector and text_embedding_projection
-        conn_weights = mx.load(str(tmp_path / "connector.safetensors"))
+        conn_weights = load_safetensors(tmp_path / "connector.safetensors")
         assert "connector.linear.weight" in conn_weights
         assert "text_embedding_projection.weight" in conn_weights
 
@@ -618,9 +618,9 @@ class TestSplitPipeline:
         assert "audio_decoder.safetensors" in result
 
         # Verify loadable
-        tm = mx.load(str(tmp_path / "text_model.safetensors"))
+        tm = load_safetensors(tmp_path / "text_model.safetensors")
         assert len(tm) == 2
-        ad = mx.load(str(tmp_path / "audio_decoder.safetensors"))
+        ad = load_safetensors(tmp_path / "audio_decoder.safetensors")
         assert len(ad) == 2
 
     def test_split_model_json_content(self, tmp_path):
@@ -646,7 +646,7 @@ class TestSplitPipeline:
 
         split_model(tmp_path, LTX23_SPLIT_MAP)
 
-        loaded = mx.load(str(tmp_path / "transformer.safetensors"))
+        loaded = load_safetensors(tmp_path / "transformer.safetensors")
         assert mx.allclose(loaded["transformer.weight"], original_tensor).item()
 
 

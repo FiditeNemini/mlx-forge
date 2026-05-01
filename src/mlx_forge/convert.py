@@ -11,6 +11,7 @@ import json
 import os
 from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
 import mlx.core as mx
 from huggingface_hub import hf_hub_download
@@ -32,6 +33,15 @@ def fmt_size(mb: float) -> str:
     if mb >= 1000:
         return f"{mb / 1000:.1f} GB"
     return f"{mb:.0f} MB"
+
+
+def load_safetensors(path: str | Path) -> dict[str, mx.array]:
+    """Load a safetensors file and return a typed dict of weight arrays.
+
+    Wraps mx.load() (which returns a broad union type) with an explicit cast
+    to dict[str, mx.array]. Safe to call only on .safetensors files.
+    """
+    return cast(dict[str, mx.array], mx.load(str(path)))
 
 
 def _validate_path_within(filepath: Path, parent: Path) -> Path:
@@ -116,13 +126,13 @@ def load_weights(
             shard_path = checkpoint_dir / shard
             _validate_path_within(shard_path, checkpoint_dir)
             print(f"  Loading {shard}...")
-            shard_weights = mx.load(str(shard_path))
+            shard_weights = load_safetensors(shard_path)
             weights.update(shard_weights)
         return weights
 
     single_path = checkpoint_dir / single_filename
     print(f"\nLoading weights lazily from {single_path.name}...")
-    return mx.load(str(single_path))
+    return load_safetensors(single_path)
 
 
 def classify_keys(
@@ -225,7 +235,7 @@ def quantize_component(
         return
 
     print(f"\n  Quantizing {component_name} to int{bits} (group_size={group_size})...")
-    weights = mx.load(str(filepath))
+    weights = load_safetensors(filepath)
 
     result = quantize_weights(
         weights,

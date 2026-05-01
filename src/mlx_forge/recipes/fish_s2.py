@@ -28,6 +28,7 @@ from ..convert import (
     classify_keys,
     download_hf_files,
     fmt_size,
+    load_safetensors,
     load_weights,
     process_component,
     quantize_component,
@@ -437,7 +438,7 @@ def validate(args) -> None:
     print("\n== Text Model Weights ==")
     tm_path = model_dir / "text_model.safetensors"
     if tm_path.exists():
-        weights = mx.load(str(tm_path))
+        weights = load_safetensors(tm_path)
         keys = set(weights.keys())
 
         validate_no_pytorch_prefix(weights, "text_model.model.", result)
@@ -465,7 +466,7 @@ def validate(args) -> None:
     print("\n== Audio Decoder Weights ==")
     ad_path = model_dir / "audio_decoder.safetensors"
     if ad_path.exists():
-        weights = mx.load(str(ad_path))
+        weights = load_safetensors(ad_path)
         keys = set(weights.keys())
 
         # Keys are prefixed "audio_decoder." by design (component_prefix)
@@ -494,7 +495,7 @@ def validate(args) -> None:
     print("\n== Codec (DAC) Weights ==")
     codec_path = model_dir / "codec.safetensors"
     if codec_path.exists():
-        weights = mx.load(str(codec_path))
+        weights = load_safetensors(codec_path)
         keys = set(weights.keys())
 
         validate_no_pytorch_prefix(weights, "generator.", result)

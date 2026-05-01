@@ -15,6 +15,7 @@ import json
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
 import mlx.core as mx
 from tqdm import tqdm
@@ -146,7 +147,7 @@ def quantize_file(
     print(f"Quantizing {input_path.name} to int{bits} (group_size={group_size})...")
     t0 = time.monotonic()
 
-    weights = mx.load(str(input_path))
+    weights = cast(dict[str, mx.array], mx.load(str(input_path)))
     result = quantize_weights(
         weights,
         bits=bits,

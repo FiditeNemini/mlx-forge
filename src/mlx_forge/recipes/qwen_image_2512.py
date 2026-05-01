@@ -29,6 +29,7 @@ import mlx.core as mx
 from ..convert import (
     download_hf_files,
     fmt_size,
+    load_safetensors,
     load_weights,
     process_component,
     quantize_component,
@@ -371,7 +372,7 @@ def validate(args) -> None:
     print("\n== Transformer Weights ==")
     tf_path = model_dir / "transformer.safetensors"
     if tf_path.exists():
-        weights = mx.load(str(tf_path))
+        weights = load_safetensors(tf_path)
         keys = set(weights.keys())
         print(f"  Keys: {len(keys)}")
 
@@ -408,7 +409,7 @@ def validate(args) -> None:
     print("\n== Text Encoder Weights ==")
     te_path = model_dir / "text_encoder.safetensors"
     if te_path.exists():
-        weights = mx.load(str(te_path))
+        weights = load_safetensors(te_path)
         keys = set(weights.keys())
         print(f"  Keys: {len(keys)}")
 
@@ -442,7 +443,7 @@ def validate(args) -> None:
     print("\n== VAE Weights ==")
     vae_path = model_dir / "vae.safetensors"
     if vae_path.exists():
-        weights = mx.load(str(vae_path))
+        weights = load_safetensors(vae_path)
         keys = set(weights.keys())
         print(f"  Keys: {len(keys)}")
 

@@ -34,6 +34,7 @@ import mlx.core as mx
 from ..convert import (
     download_hf_files,
     fmt_size,
+    load_safetensors,
 )
 from ..quantize import _materialize
 
@@ -128,7 +129,7 @@ def _convert_pass(
 
     print(f"\nLoading weights from {src_path}...")
     t0 = time.monotonic()
-    weights = mx.load(str(src_path))
+    weights = load_safetensors(src_path)
     print(f"  {len(weights)} keys loaded (lazy) in {time.monotonic() - t0:.1f}s")
 
     print(f"\nProcessing {len(weights)} keys...")
@@ -260,7 +261,7 @@ def _quantize_pass(
 
     pass_name = Path(pass_filename).stem
     print(f"\n  Quantizing {pass_name} to int{bits} (group_size={group_size})...")
-    weights = mx.load(str(filepath))
+    weights = load_safetensors(filepath)
 
     result = quantize_weights(
         weights,
@@ -351,7 +352,7 @@ def validate(args) -> None:
         if not pass_path.exists():
             continue
 
-        weights = mx.load(str(pass_path))
+        weights = load_safetensors(pass_path)
         keys = set(weights.keys())
 
         # Quantized models have extra .scales and .biases keys

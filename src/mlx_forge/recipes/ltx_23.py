@@ -16,6 +16,7 @@ import json
 import shutil
 import time
 from pathlib import Path
+from typing import Any, cast
 
 import mlx.core as mx
 
@@ -23,6 +24,7 @@ from ..convert import (
     classify_keys,
     download_hf_files,
     fmt_size,
+    load_safetensors,
     process_component,
 )
 from ..quantize import _materialize, quantize_weights
@@ -280,7 +282,7 @@ def _detect_cross_attention_adaln(checkpoint_path: str) -> bool:
     Matches only keys ending with '.scale_shift_table' to avoid picking up
     cross-attention variants like 'scale_shift_table_a2v_ca_audio' (5 params).
     """
-    weights = mx.load(checkpoint_path)
+    weights = load_safetensors(checkpoint_path)
     for key in weights:
         if key.endswith(".scale_shift_table"):
             shape = weights[key].shape
@@ -297,7 +299,8 @@ def extract_config(checkpoint_path: str) -> tuple[dict, bool]:
         Tuple of (shared_config, cross_attention_adaln). The cross_attention_adaln
         value is variant-specific and should be stored per-variant by the caller.
     """
-    _, metadata = mx.load(checkpoint_path, return_metadata=True)
+    _weights, _meta = mx.load(checkpoint_path, return_metadata=True)
+    metadata: dict[str, Any] = cast(dict[str, Any], _meta)
 
     model_version = metadata.get("model_version", "unknown")
     is_v2 = model_version.startswith("2.3")
@@ -363,7 +366,7 @@ def process_shared_stats(
         # Append to decoder
         decoder_path = output_dir / "vae_decoder.safetensors"
         if decoder_path.exists():
-            decoder_weights = mx.load(str(decoder_path))
+            decoder_weights: dict[str, mx.array] = load_safetensors(decoder_path)
             for k in decoder_weights:
                 _materialize(decoder_weights[k])
         else:
@@ -379,7 +382,7 @@ def process_shared_stats(
         # Append to encoder
         encoder_path = output_dir / "vae_encoder.safetensors"
         if encoder_path.exists():
-            encoder_weights = mx.load(str(encoder_path))
+            encoder_weights: dict[str, mx.array] = load_safetensors(encoder_path)
             for k in encoder_weights:
                 _materialize(encoder_weights[k])
         else:
@@ -425,7 +428,7 @@ def quantize_transformer(
         return
 
     print(f"\nQuantizing transformer ({variant}) to int{bits} (group_size={group_size})...")
-    weights = mx.load(str(tf_file))
+    weights = load_safetensors(tf_file)
 
     result = quantize_weights(
         weights,
@@ -488,7 +491,7 @@ def convert_upscaler(
         Number of weights saved.
     """
     print(f"\n[{component_name}] Loading {checkpoint_path}...")
-    weights = mx.load(checkpoint_path)
+    weights = load_safetensors(checkpoint_path)
     print(f"  {len(weights)} keys")
 
     converted: dict[str, mx.array] = {}
@@ -506,10 +509,11 @@ def convert_upscaler(
     mx.save_safetensors(str(output_file), converted)
 
     # Extract config from safetensors metadata
-    _, metadata = mx.load(checkpoint_path, return_metadata=True)
-    if metadata:
+    _weights2, _meta2 = mx.load(checkpoint_path, return_metadata=True)
+    metadata2: dict[str, Any] = cast(dict[str, Any], _meta2)
+    if metadata2:
         upscaler_config = {}
-        for k, v in metadata.items():
+        for k, v in metadata2.items():
             try:
                 upscaler_config[k] = json.loads(v)
             except (json.JSONDecodeError, TypeError):
@@ -653,9 +657,9 @@ def _convert_variant(
     print(f"  Cross-attention AdaLN: {cross_attn_adaln}")
 
     # Load weights lazily
-    print("\nLoading weights lazily via mx.load...")
+    print("\nLoading weights lazily via load_safetensors...")
     t0 = time.monotonic()
-    checkpoint_weights = mx.load(checkpoint_path)
+    checkpoint_weights = load_safetensors(checkpoint_path)
     print(f"  {len(checkpoint_weights)} keys loaded (lazy)")
 
     # Classify keys
@@ -911,7 +915,7 @@ def _validate_transformer(
         return
 
     print(f"  \033[92m\u2713\033[0m {tf_filename} exists")
-    weights = mx.load(str(tf_path))
+    weights = load_safetensors(tf_path)
     keys = set(weights.keys())
 
     validate_no_pytorch_prefix(weights, "model.diffusion_model.", result)
@@ -1085,7 +1089,7 @@ def validate(args) -> None:
         print("\n== Connector Weights ==")
         conn_path = model_dir / "connector.safetensors"
         if conn_path.exists():
-            weights = mx.load(str(conn_path))
+            weights = load_safetensors(conn_path)
             keys = set(weights.keys())
             result.check(
                 any("video_embeddings_connector" in k for k in keys), "Video connector keys present"
@@ -1108,7 +1112,7 @@ def validate(args) -> None:
             print(f"\n== {component} Weights ==")
             vae_path = model_dir / f"{component}.safetensors"
             if vae_path.exists():
-                weights = mx.load(str(vae_path))
+                weights = load_safetensors(vae_path)
                 validate_no_pytorch_prefix(weights, "vae.", result)
                 stats_keys = [k for k in weights if "per_channel_statistics" in k]
                 result.check(
@@ -1124,7 +1128,7 @@ def validate(args) -> None:
         print("\n== Audio VAE Weights ==")
         avae_path = model_dir / "audio_vae.safetensors"
         if avae_path.exists():
-            weights = mx.load(str(avae_path))
+            weights = load_safetensors(avae_path)
             # Check prefix structure: all keys should start with audio_vae.
             all_prefixed = all(k.startswith("audio_vae.") for k in weights)
             result.check(all_prefixed, f"All keys have 'audio_vae.' prefix ({len(weights)} keys)")
@@ -1147,7 +1151,7 @@ def validate(args) -> None:
         print("\n== Vocoder Weights ==")
         voc_path = model_dir / "vocoder.safetensors"
         if voc_path.exists():
-            weights = mx.load(str(voc_path))
+            weights = load_safetensors(voc_path)
             has_prefix = all(k.startswith("vocoder.") for k in weights)
             result.check(has_prefix, f"All keys have 'vocoder.' prefix ({len(weights)} keys)")
             conv1d = [(k, v) for k, v in weights.items() if "weight" in k and v.ndim == 3]
@@ -1171,7 +1175,7 @@ def validate(args) -> None:
         upscaler_path = model_dir / f"{upscaler_name}.safetensors"
         if upscaler_path.exists():
             print(f"\n== {upscaler_name} Weights ==")
-            weights = mx.load(str(upscaler_path))
+            weights = load_safetensors(upscaler_path)
             prefix = f"{upscaler_name}."
             has_prefix = all(k.startswith(prefix) for k in weights)
             result.check(
@@ -1227,7 +1231,7 @@ def _cross_reference(model_dir: Path, source_path: str, result: ValidationResult
     """Compare converted weights against source checkpoint."""
     print("\n== Cross-Reference with Source ==")
 
-    source_weights = mx.load(source_path)
+    source_weights = load_safetensors(source_path)
     print(f"  Source checkpoint: {len(source_weights)} keys")
 
     classified = sum(1 for k in source_weights if classify_key(k) is not None)
@@ -1253,7 +1257,7 @@ def _cross_reference(model_dir: Path, source_path: str, result: ValidationResult
         del source_weights
         return
 
-    tf_weights = mx.load(str(tf_path))
+    tf_weights = load_safetensors(tf_path)
 
     for src_key in spot_checks:
         if src_key not in source_weights:
