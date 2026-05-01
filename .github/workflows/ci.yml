@@ -12,6 +12,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
       - run: uvx ruff check src/ tests/
       - run: uvx ruff format --check src/ tests/
 
@@ -23,6 +25,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
       - run: uv run --extra dev --python ${{ matrix.python-version }} pytest tests/ -v
 
   smoke-test:
@@ -31,6 +35,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
       - name: Install package
         run: uv sync --extra dev
 
