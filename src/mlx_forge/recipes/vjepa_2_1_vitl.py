@@ -55,7 +55,14 @@ from typing import Any
 
 import mlx.core as mx
 
-from ..convert import add_common_convert_args, load_torch_state_dict, quantize_component
+from ..convert import (
+    add_common_convert_args,
+    default_output_dir,
+    load_torch_state_dict,
+    print_output_summary,
+    quantize_component,
+    write_split_model,
+)
 from ..quantize import _materialize, read_quantize_config, write_quantize_config
 from ..transpose import transpose_conv
 
@@ -280,8 +287,7 @@ def convert(args) -> None:
     if args.output:
         output_dir = Path(args.output)
     else:
-        suffix = f"-q{args.bits}" if args.quantize else ""
-        output_dir = Path("models") / f"vjepa-2.1-vitl-mlx{suffix}"
+        output_dir = default_output_dir("vjepa-2.1-vitl", quantize=args.quantize, bits=args.bits)
 
     if args.dry_run:
         _dry_run(args, src_path, output_dir)
@@ -397,8 +403,7 @@ def convert(args) -> None:
         },
         "quantized": bool(args.quantize),
     }
-    with open(output_dir / "split_model.json", "w") as f:
-        json.dump(split_info, f, indent=2)
+    write_split_model(output_dir, split_info)
 
     # ----- Optional quantization -----
     if args.quantize:
@@ -421,10 +426,7 @@ def convert(args) -> None:
     # ----- Summary -----
     print(f"\n{'=' * 60}")
     print(f"Conversion complete: encoder={enc_count}, predictor={pred_count} weights")
-    print(f"Output: {output_dir}")
-    for p in sorted(output_dir.rglob("*")):
-        if p.is_file():
-            print(f"  {p.relative_to(output_dir)}: {p.stat().st_size / (1024 * 1024):.1f} MB")
+    print_output_summary(output_dir)
     print("\nDone!")
 
 

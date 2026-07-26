@@ -32,11 +32,15 @@ import mlx.core as mx
 
 from ..convert import (
     add_common_convert_args,
+    copy_required_files,
+    default_output_dir,
     download_hf_files,
     fmt_size,
     load_weights,
+    print_output_summary,
     process_component,
     quantize_component,
+    write_split_model,
 )
 from ..quantize import _materialize, read_quantize_config, write_quantize_config
 from ..transpose import transpose_conv
@@ -306,36 +310,17 @@ def _convert_component(
 def _copy_pipeline_files(source_dir: Path, output_dir: Path) -> None:
     """Copy tokenizer, scheduler, and model_index files.
 
-    Tokenizer files are written into a ``tokenizer/`` subdirectory with their
-    original names so downstream tools (e.g. mflux TokenizerLoader, Hugging
-    Face AutoTokenizer) can load them without extra path mapping.  All other
-    subdirectory files are written flat with a ``{prefix}_`` name.
-
-    Strict on purpose, like every other recipe since #32/#34: a silent
-    ``if not src.exists(): continue`` shipped incomplete artifacts twice, and a
-    WARNING scrolling past mid-conversion is not a failure signal. Missing
-    files abort before anything is copied, naming all of them at once — so no
-    partial output directory is left behind either.
+    `tokenizer/` keeps its directory so downstream tools (mflux TokenizerLoader,
+    HF AutoTokenizer) load it without path mapping; the rest is flattened to
+    `{prefix}_{name}`. Strict: a missing file aborts before anything is copied.
     """
-    missing = [f for f in _HF_CONFIG_FILES if not (source_dir / f).exists()]
-    if missing:
-        raise SystemExit(
-            "ERROR: required pipeline files missing from source: "
-            + ", ".join(missing)
-            + f" (looked in {source_dir})"
-        )
-    for config_file in _HF_CONFIG_FILES:
-        src = source_dir / config_file
-        if config_file.startswith("tokenizer/"):
-            dest = output_dir / config_file
-            dest.parent.mkdir(parents=True, exist_ok=True)
-        elif "/" in config_file:
-            prefix = config_file.split("/")[0]
-            dest = output_dir / f"{prefix}_{Path(config_file).name}"
-        else:
-            dest = output_dir / Path(config_file).name
-        shutil.copy2(str(src), str(dest))
-        print(f"  Copied {config_file} → {dest.relative_to(output_dir)}")
+    copy_required_files(
+        source_dir,
+        output_dir,
+        _HF_CONFIG_FILES,
+        flatten=True,
+        keep_tree={"tokenizer"},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -391,8 +376,7 @@ def convert(args) -> None:
     if args.output:
         output_dir = Path(args.output)
     else:
-        suffix = f"-q{args.bits}" if args.quantize else ""
-        output_dir = Path("models") / f"ideogram-4-mlx{suffix}"
+        output_dir = default_output_dir("ideogram-4", quantize=args.quantize, bits=args.bits)
 
     if args.dry_run:
         _dry_run(args, output_dir)
@@ -449,8 +433,7 @@ def convert(args) -> None:
         "source": REPO_ID,
         "quantized": False,
     }
-    with open(output_dir / "split_model.json", "w") as f:
-        json.dump(split_info, f, indent=2)
+    write_split_model(output_dir, split_info)
 
     # Copy pipeline files
     print("\nCopying pipeline files...")
@@ -458,11 +441,7 @@ def convert(args) -> None:
 
     print(f"\n{'=' * 60}")
     print(f"Conversion complete: {total_weights} total weights")
-    print(f"Output: {output_dir}")
-    for p in sorted(output_dir.iterdir()):
-        if p.is_file():
-            size_mb = p.stat().st_size / (1024 * 1024)
-            print(f"  {p.name}: {size_mb:.1f} MB")
+    print_output_summary(output_dir)
 
     # Optional quantization
     if args.quantize:
@@ -492,8 +471,7 @@ def convert(args) -> None:
 
         split_info["quantized"] = True
         split_info["quantization_bits"] = args.bits
-        with open(output_dir / "split_model.json", "w") as f:
-            json.dump(split_info, f, indent=2)
+        write_split_model(output_dir, split_info)
 
         write_quantize_config(
             output_dir,

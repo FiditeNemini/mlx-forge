@@ -24,10 +24,12 @@ import mlx.core as mx
 
 from ..convert import (
     add_common_convert_args,
+    default_output_dir,
     download_hf_files,
     load_safetensors,
     load_torch_state_dict,
     quantize_component,
+    write_split_model,
 )
 from ..quantize import _materialize
 from ..transpose import needs_transpose, transpose_conv
@@ -307,8 +309,11 @@ def convert(args) -> None:
     """Convert Hunyuan3D-2.1 checkpoint to MLX format."""
     stage = args.stage
 
-    suffix = f"-q{args.bits}" if args.quantize else ""
-    output_dir = Path(args.output) if args.output else Path(f"./models/hunyuan3d-2.1-mlx{suffix}")
+    output_dir = (
+        Path(args.output)
+        if args.output
+        else default_output_dir("hunyuan3d-2.1", quantize=args.quantize, bits=args.bits)
+    )
 
     if args.dry_run:
         components = SHAPE_COMPONENTS if stage == "shape" else PAINT_COMPONENTS
@@ -619,9 +624,7 @@ def _write_config_files(output_dir, config, components, args, quantize_target):
             "group_size": args.group_size,
             "quantized_components": [quantize_target],
         }
-    split_path = output_dir / "split_model.json"
-    with open(split_path, "w") as f:
-        json.dump(split_model, f, indent=2)
+    write_split_model(output_dir, split_model)
 
 
 # ---------------------------------------------------------------------------

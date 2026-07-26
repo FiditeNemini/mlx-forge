@@ -35,11 +35,15 @@ import mlx.core as mx
 
 from ..convert import (
     add_common_convert_args,
+    copy_required_files,
+    default_output_dir,
     download_hf_files,
     fmt_size,
     load_safetensors,
     load_weights,
+    print_output_summary,
     quantize_component,
+    write_split_model,
 )
 from ..quantize import _materialize, read_quantize_config, write_quantize_config
 from ..transpose import transpose_conv
@@ -383,28 +387,11 @@ def _build_config(download_dir: Path, local_source: Path | None = None) -> dict:
 def copy_pipeline_configs(source_dir: Path, output_dir: Path) -> None:
     """Copy every _HF_CONFIG_FILES entry, flattening `a/b` to `a_b`.
 
-    Strict on purpose: each listed file is required for a usable artifact
-    (the published q8 repo shipped without tokenizer/spiece.model because a
-    silent `if src.exists()` skip let an incomplete --source through — the
-    tokenizer could not load at all). Missing files abort the conversion
-    with the full list instead of publishing a broken pipeline.
+    Strict on purpose: each listed file is required for a usable artifact (the
+    published q8 repo shipped without tokenizer/spiece.model because a silent
+    `if src.exists()` skip let an incomplete --source through).
     """
-    missing = [f for f in _HF_CONFIG_FILES if not (source_dir / f).exists()]
-    if missing:
-        raise SystemExit(
-            "ERROR: required pipeline files missing from source: "
-            + ", ".join(missing)
-            + f" (looked in {source_dir})"
-        )
-    for config_file in _HF_CONFIG_FILES:
-        src = source_dir / config_file
-        if "/" in config_file:
-            prefix = config_file.split("/")[0]
-            dest = output_dir / f"{prefix}_{Path(config_file).name}"
-        else:
-            dest = output_dir / Path(config_file).name
-        shutil.copy2(str(src), str(dest))
-        print(f"  Copied {config_file} -> {dest.name}")
+    copy_required_files(source_dir, output_dir, _HF_CONFIG_FILES, flatten=True)
 
 
 def convert(args) -> None:
@@ -412,8 +399,9 @@ def convert(args) -> None:
     if args.output:
         output_dir = Path(args.output)
     else:
-        suffix = f"-q{args.bits}" if args.quantize else ""
-        output_dir = Path("models") / f"cogvideox-fun-v1.5-5b-inp-mlx{suffix}"
+        output_dir = default_output_dir(
+            "cogvideox-fun-v1.5-5b-inp", quantize=args.quantize, bits=args.bits
+        )
 
     if args.dry_run:
         _dry_run(args, output_dir)
@@ -479,8 +467,7 @@ def convert(args) -> None:
             "text_encoder": "T5-v1.1-XXL encoder (24 layers, d_model=4096).",
         },
     }
-    with open(output_dir / "split_model.json", "w") as f:
-        json.dump(split_info, f, indent=2)
+    write_split_model(output_dir, split_info)
 
     # -----------------------------------------------------------------------
     # 5. Optional quantization (transformer + text_encoder, skip vae)
@@ -508,20 +495,14 @@ def convert(args) -> None:
 
         split_info["quantized"] = True
         split_info["quantization_bits"] = args.bits
-        with open(output_dir / "split_model.json", "w") as f:
-            json.dump(split_info, f, indent=2)
+        write_split_model(output_dir, split_info)
 
     # -----------------------------------------------------------------------
     # Summary
     # -----------------------------------------------------------------------
     print(f"\n{'=' * 60}")
     print(f"Conversion complete: {total_weights} total weights")
-    print(f"Output: {output_dir}")
-    for p in sorted(output_dir.rglob("*")):
-        if p.is_file():
-            size_mb = p.stat().st_size / (1024 * 1024)
-            rel = p.relative_to(output_dir)
-            print(f"  {rel}: {size_mb:.1f} MB")
+    print_output_summary(output_dir)
     print("\nDone!")
 
 

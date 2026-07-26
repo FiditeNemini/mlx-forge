@@ -23,11 +23,14 @@ import mlx.core as mx
 from ..convert import (
     add_common_convert_args,
     classify_keys,
+    default_output_dir,
     download_hf_files,
     fmt_size,
     load_safetensors,
+    print_output_summary,
     process_component,
     quantize_component,
+    write_split_model,
 )
 from ..quantize import _materialize, read_quantize_config, write_quantize_config
 from ..transpose import transpose_conv
@@ -756,8 +759,7 @@ def convert(args) -> None:
     if args.output:
         output_dir = Path(args.output)
     else:
-        suffix = f"-q{args.bits}" if args.quantize else ""
-        output_dir = Path("models") / f"ltx-2.3-mlx{suffix}"
+        output_dir = default_output_dir("ltx-2.3", quantize=args.quantize, bits=args.bits)
 
     if args.dry_run:
         _dry_run(args, output_dir)
@@ -882,16 +884,11 @@ def convert(args) -> None:
     }
     if skip_shared:
         split_info["delta"] = True
-    with open(output_dir / "split_model.json", "w") as f:
-        json.dump(split_info, f, indent=2)
+    write_split_model(output_dir, split_info)
 
     print(f"\n{'=' * 60}")
     print(f"Conversion complete: {total_weights} total weights")
-    print(f"Output: {output_dir}")
-    for p in sorted(output_dir.iterdir()):
-        if p.is_file():
-            size_mb = p.stat().st_size / (1024 * 1024)
-            print(f"  {p.name}: {size_mb:.1f} MB")
+    print_output_summary(output_dir)
 
     # Optional quantization — quantize each variant's transformer
     if args.quantize:
@@ -902,8 +899,7 @@ def convert(args) -> None:
 
         split_info["quantized"] = True
         split_info["quantization_bits"] = args.bits
-        with open(output_dir / "split_model.json", "w") as f:
-            json.dump(split_info, f, indent=2)
+        write_split_model(output_dir, split_info)
 
         print("\nFinal files after quantization:")
         for p in sorted(output_dir.iterdir()):
