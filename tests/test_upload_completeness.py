@@ -10,7 +10,8 @@ invariant on the upload side too.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -400,3 +401,105 @@ class TestCardExcludesHubPlumbing:
         )
         assert ".DS_Store" not in card
         assert "tokenizer/spiece.model" in card
+
+
+class TestCardOnlyListingProvenance:
+    """In --card-only nothing local is uploaded, so the remote is the truth."""
+
+    def test_remote_sizes_win_over_a_divergent_local_build(self, tmp_path):
+        from mlx_forge.cli import _card_file_listing
+
+        model_dir = _model_dir(tmp_path)  # local transformer.safetensors is 10 bytes
+        api = _api()
+        info = api.model_info.return_value
+        info.siblings = [MagicMock(rfilename="transformer.safetensors", size=999)]
+
+        listing = _card_file_listing(api, "test/repo", model_dir, card_only=True)
+
+        assert listing["transformer.safetensors"] == 999, (
+            "a local directory holding another build must not set the published size"
+        )
+
+    def test_a_full_upload_still_prefers_the_local_build(self, tmp_path):
+        from mlx_forge.cli import _card_file_listing
+
+        model_dir = _model_dir(tmp_path)
+        api = _api()
+        api.model_info.return_value.siblings = [
+            MagicMock(rfilename="transformer.safetensors", size=999)
+        ]
+
+        listing = _card_file_listing(api, "test/repo", model_dir, card_only=False)
+
+        assert listing["transformer.safetensors"] == 10, "the local files are what goes up"
+
+
+class TestDryRunShowsWhatIsPushed:
+    """--dry-run is only useful if it renders the same bytes a real run pushes.
+
+    It did not: the CLI generated the card, then upload_model regenerated it
+    from the manifest alone. The dry run showed the good card and the push
+    published the poor one — which is how a published card lost a section.
+    """
+
+    def _dir(self, tmp_path):
+        import json
+
+        (tmp_path / "split_model.json").write_text(
+            json.dumps({"source": "Lightricks/LTX-2.3", "recipe": "ltx-2.3"})
+        )
+        (tmp_path / "config.json").write_text("{}")
+        return tmp_path
+
+    def _api(self):
+        api = MagicMock()
+        info = MagicMock()
+        info.siblings = [MagicMock(rfilename="transformer-dev.safetensors", size=4096)]
+        api.model_info.return_value = info
+        api.create_repo.return_value = "https://huggingface.co/test/repo"
+        return api
+
+    def _run(self, model_dir, api, *extra):
+        from mlx_forge.cli import main
+
+        argv = ["mlx-forge", "upload", str(model_dir), "--repo-id", "test/repo", "--card-only"]
+        with (
+            patch("sys.argv", argv + list(extra)),
+            patch("huggingface_hub.HfApi", return_value=api),
+        ):
+            main()
+
+    def test_dry_run_output_matches_the_pushed_bytes(self, tmp_path, capsys):
+        model_dir = self._dir(tmp_path)
+
+        # dry run: nothing written, nothing uploaded
+        api = self._api()
+        self._run(model_dir, api, "--dry-run")
+        api.upload_file.assert_not_called()
+        assert not (model_dir / "README.md").exists()
+
+        # real run
+        api2 = self._api()
+        self._run(model_dir, api2)
+        pousse = Path(
+            next(
+                c
+                for c in api2.upload_file.call_args_list
+                if c.kwargs["path_in_repo"] == "README.md"
+            ).kwargs["path_or_fileobj"]
+        ).read_text()
+
+        # every non-blank line the dry run announced must be in what went up
+        annonce = [
+            line[1:]
+            for line in capsys.readouterr().out.splitlines()
+            if line.startswith("+") and not line.startswith("+++") and line[1:].strip()
+        ]
+        assert annonce, "the dry run announced nothing"
+        for line in annonce:
+            assert line in pousse, f"dry run showed {line!r} but it is not in the pushed card"
+
+    def test_dry_run_writes_no_readme(self, tmp_path):
+        model_dir = self._dir(tmp_path)
+        self._run(model_dir, self._api(), "--dry-run")
+        assert not (model_dir / "README.md").exists()

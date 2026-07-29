@@ -202,6 +202,14 @@ def build_parser() -> argparse.ArgumentParser:
             "command that actually exists."
         ),
     )
+    upload_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Render the card and show what would change on the remote, without "
+            "writing or uploading anything. Use before refreshing a published card."
+        ),
+    )
     mode_group = upload_parser.add_mutually_exclusive_group()
     mode_group.add_argument(
         "--card-only",
@@ -300,12 +308,47 @@ def _run_generic_quantize(args) -> None:
     )
 
 
-def _card_file_listing(api, repo_id: str, model_dir) -> dict[str, int]:
+def _remote_variants(api, repo_id: str) -> tuple[list[str] | None, list[str] | None]:
+    """Transformer variants and LoRAs as they exist on the remote.
+
+    A delta upload adds files this directory never had, so a refresh must read
+    the repo rather than the manifest. Returns (None, None) when the repo
+    cannot be queried, letting the card fall back to split_model.json.
+    """
+    from huggingface_hub.errors import HfHubHTTPError, RepositoryNotFoundError
+
+    try:
+        info = api.model_info(repo_id)
+        remote_files = [s.rfilename for s in (info.siblings or [])]
+    except (RepositoryNotFoundError, HfHubHTTPError, OSError, ConnectionError):
+        return None, None
+
+    if not remote_files:
+        return None, None
+
+    variants = sorted(
+        v
+        for f in remote_files
+        if f.startswith("transformer-") and f.endswith(".safetensors")
+        for v in [f.removeprefix("transformer-").removesuffix(".safetensors")]
+        if v
+    )
+    loras = sorted(f for f in remote_files if "lora" in f and f.endswith(".safetensors"))
+    print(f"Detected variants on remote: {', '.join(variants) or '(none)'}")
+    print(f"Detected LoRAs on remote: {', '.join(loras) or '(none)'}")
+    return variants, loras
+
+
+def _card_file_listing(api, repo_id: str, model_dir, *, card_only: bool = False) -> dict[str, int]:
     """What the repo will contain: the remote listing plus what is about to go up.
 
     The card's other derived section (transformer_variants) already reads the
     remote, so deriving the file list from the local directory alone produced
     cards that contradicted themselves after a delta upload.
+
+    In --card-only mode nothing local is uploaded, so the remote is the whole
+    truth: a local directory holding a different build would otherwise publish
+    sizes that do not match the repo.
     """
     from huggingface_hub.errors import HfHubHTTPError, RepositoryNotFoundError
 
@@ -320,9 +363,73 @@ def _card_file_listing(api, repo_id: str, model_dir) -> dict[str, int]:
     except (RepositoryNotFoundError, HfHubHTTPError, OSError, ConnectionError):
         pass  # new repo, or offline: the local directory is the whole story
 
+    if card_only and listing:
+        return listing
+
     for p in iter_model_files(model_dir):
         listing[p.relative_to(model_dir).as_posix()] = p.stat().st_size
     return listing
+
+
+def _show_card_diff(api, repo_id: str, card: str, model_dir, *, card_only: bool) -> None:
+    """Print what a real run would change on the remote, and stop there."""
+    import difflib
+
+    from huggingface_hub import hf_hub_download
+
+    try:
+        published = open(hf_hub_download(repo_id, "README.md")).read()
+        etat = f"against the card published at {repo_id}"
+    except Exception:
+        published = ""
+        etat = f"{repo_id} has no card yet — everything below is new"
+
+    print(f"\n{'=' * 60}")
+    print(f"DRY RUN — nothing is written or uploaded ({etat})")
+    print("=" * 60)
+
+    diff = list(
+        difflib.unified_diff(
+            published.splitlines(), card.splitlines(), "published", "regenerated", lineterm=""
+        )
+    )
+    if not diff:
+        print("\nThe card is already up to date — a real run would change nothing.")
+    else:
+        print()
+        for line in diff:
+            print(line)
+
+    def entrees(prefixe, entete):
+        return [
+            line[1:]
+            for line in diff
+            if line.startswith(prefixe) and not line.startswith(entete) and line[1:].strip()
+        ]
+
+    # A file whose size changed shows as one removal plus one addition. Pairing
+    # them on the entry name keeps the warning meaningful: it must fire on
+    # content that disappears, not on a size that moved.
+    def cle(line: str) -> str:
+        return line.split("` (")[0] if line.startswith("- `") else line
+
+    ajoutees = {cle(line) for line in entrees("+", "+++")}
+    perdues = [line for line in entrees("-", "---") if cle(line) not in ajoutees]
+    print(f"\n{'-' * 60}")
+    if perdues:
+        print(f"WARNING: {len(perdues)} line(s) would be REMOVED from the published card.")
+        print("Content that exists only in the published README is lost by regenerating.")
+        print("Declare it in the recipe, or pass the matching flag, before pushing.")
+    else:
+        print("No content would be lost.")
+
+    print("\nA real run would push:")
+    print("  README.md")
+    if card_only:
+        if (model_dir / "split_model.json").exists():
+            print("  split_model.json")
+    else:
+        print(f"  every file in {model_dir} (see the Files section above)")
 
 
 def _run_upload(args) -> None:
@@ -345,8 +452,9 @@ def _run_upload(args) -> None:
         print(f"ERROR: {model_dir} not found")
         sys.exit(1)
 
-    safetensor_files = list(model_dir.glob("*.safetensors"))
-    if not safetensor_files:
+    # --card-only pushes the README and the manifest, never the weights, so it
+    # must work from a directory that holds only metadata.
+    if not args.card_only and not list(model_dir.glob("*.safetensors")):
         print(f"ERROR: No .safetensors files found in {model_dir}")
         print("Run conversion and/or splitting before uploading.")
         sys.exit(1)
@@ -386,7 +494,11 @@ def _run_upload(args) -> None:
 
     # Describe the repo as it will be, not just the local directory: after a
     # delta upload the remote holds files this directory never had.
-    file_listing = _card_file_listing(api, repo_id, model_dir)
+    file_listing = _card_file_listing(api, repo_id, model_dir, card_only=args.card_only)
+
+    # A refresh describes the repo as it is, including files a delta upload
+    # added that this directory never held.
+    variants, loras = _remote_variants(api, repo_id) if args.card_only else (None, None)
 
     # Generate and write model card
     card_content = generate_model_card(
@@ -400,7 +512,13 @@ def _run_upload(args) -> None:
         links=args.link or split_info.get("links"),
         cli_snippet=args.cli_snippet or split_info.get("cli_snippet"),
         file_listing=file_listing,
+        transformer_variants=variants,
+        lora_files=loras,
     )
+    if args.dry_run:
+        _show_card_diff(api, repo_id, card_content, model_dir, card_only=args.card_only)
+        return
+
     readme_path = model_dir / "README.md"
     with open(readme_path, "w") as f:
         f.write(card_content)
