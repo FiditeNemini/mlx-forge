@@ -124,7 +124,30 @@ METADATA = RecipeMetadata(
     name="cogvideox-fun-v1.5-5b-inp",
     source=REPO_ID,
     license="apache-2.0",
+    # should_quantize_transformer: 2D .weight in the transformer blocks,
+    # minus patch/position/timestep embeddings, norms and the output
+    # projection; text_encoder and vae are skipped wholesale.
+    quantization_scope=(
+        "transformer block Linear weights only, leaving the embeddings, "
+        "norms and the output projection in bf16"
+    ),
     usage_url="https://github.com/dgrauet/VideoX-Fun-mlx",
+    # Verbatim from the inference project's own README. Raw string: a
+    # trailing backslash must stay a shell continuation, not swallow its
+    # newline. {repo_id} is substituted at render time, so one
+    # declaration covers every build of the model.
+    cli_snippet=r"""
+pip install mlx sentencepiece pillow numpy huggingface_hub
+pip install git+https://github.com/dgrauet/mlx-arsenal.git
+git clone https://github.com/dgrauet/VideoX-Fun-mlx.git && cd VideoX-Fun-mlx
+
+huggingface-cli download {repo_id} --local-dir models/cogvideox-fun
+
+python scripts/quick_infer.py \
+    --model-path models/cogvideox-fun \
+    --prompt "a beautiful sunset over the ocean" \
+    --output sunset.gif
+""",
     links=[
         "VideoX-Fun-mlx (inference code): https://github.com/dgrauet/VideoX-Fun-mlx",
         "mlx-forge (conversion tool): https://github.com/dgrauet/mlx-forge",
@@ -509,6 +532,7 @@ def convert(args) -> None:
 
         split_info["quantized"] = True
         split_info["quantization_bits"] = args.bits
+        split_info["quantization_group_size"] = args.group_size
         write_split_model(output_dir, split_info)
 
     # -----------------------------------------------------------------------

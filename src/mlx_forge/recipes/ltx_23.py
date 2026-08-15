@@ -124,11 +124,24 @@ METADATA = RecipeMetadata(
     # and §3.2 obliges us to give any third-party recipient a copy of the
     # agreement — hence license_file, not just the link.
     license="other",
+    # ltx23_should_quantize: transformer_blocks Linear .weight only.
+    quantization_scope="transformer block Linear weights only",
     license_name="ltx-2-community-license-agreement",
     license_link="https://github.com/Lightricks/LTX-2/blob/main/LICENSE",
     license_file="LICENSE",
     usage_url="https://github.com/dgrauet/ltx-2-mlx",
     usage_note="a native MLX inference pipeline for LTX-2.3 on Apple Silicon",
+    # Verbatim from the inference project's own README. Raw string: a
+    # trailing backslash must stay a shell continuation, not swallow its
+    # newline. {repo_id} is substituted at render time, so one
+    # declaration covers every build of the model.
+    cli_snippet=r"""
+git clone https://github.com/dgrauet/ltx-2-mlx.git && cd ltx-2-mlx
+uv sync --all-extras
+
+ltx-2-mlx generate -p "A sunset over the ocean" --distilled \
+    --model {repo_id} -o sunset.mp4
+""",
     links=[
         "Code: https://github.com/dgrauet/ltx-2-mlx",
         "ComfyUI compatible custom nodes: https://github.com/dgrauet/ComfyUI-LTXVideo-mlx",
@@ -920,6 +933,7 @@ def convert(args) -> None:
 
         split_info["quantized"] = True
         split_info["quantization_bits"] = args.bits
+        split_info["quantization_group_size"] = args.group_size
         write_split_model(output_dir, split_info)
 
         print("\nFinal files after quantization:")
