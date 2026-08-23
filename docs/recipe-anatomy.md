@@ -63,6 +63,23 @@ defects were found in the process — the copies had drifted:
 That is the argument for using the shared layer: not line count, but that
 independent copies diverge silently.
 
+The same argument applies one level up, to numbers a recipe derives by hand
+rather than reuses. LTX-2.5's `validate()` checks each component's tensor
+count against a hand-written table, `EXPECTED_TENSOR_COUNTS`. Two of upstream's
+files fold a pair of statistics tensors into both halves of a component split,
+and the table was built by eyeballing `encoder.`/`decoder.` prefixes rather than
+from the full picture, so it undercounted both pairs by exactly the tensors it
+never went looking for. Nothing caught this in fifteen rounds of task and
+review, because the table's own test suite built its fixture packs *from* the
+table — a hand-written number checked against itself always agrees. What
+finally caught it was reconciling the table against `tensor_count` in the
+fixture `scripts/harvest_ltx25_keys.py` produces from upstream's own
+safetensors headers — evidence a recipe's own code never touches, and so
+cannot make agree with itself by construction. **A recipe's expected-tensor-count
+table (or any other hand-derived per-component number `validate()` checks
+against) must be reconciled against a harvested fixture, not merely restated
+by its own tests.**
+
 ---
 
 ## Recipe map
@@ -70,6 +87,7 @@ independent copies diverge silently.
 | Recipe | Upstream | Source format | Components | Recipe-specific flags |
 |---|---|---|---|---|
 | `ltx-2.3` | Lightricks/LTX-2.3 | safetensors | 6 + upscalers + LoRAs | `--variant --skip-shared --spatial-upscaler --temporal-upscaler --lora` |
+| `ltx-2.5` | Lightricks/LTX-2.5 (gated) | safetensors, pre-split | 2 DiT + text encoder + 2 video VAE + audio + duration head + upscalers | `--variant --skip-shared --lora` |
 | `ideogram-4` | ideogram-ai/ideogram-4-fp8 | **fp8** + scales | 4 | `--source` |
 | `matrix-game-3.0` | Skywork/Matrix-Game-3.0 | safetensors + `.pth` | 6 | `--dit/--t5/--vae-checkpoint --skip-tokenizer` |
 | `cogvideox-fun-v1.5-5b-inp` | alibaba-pai/CogVideoX-Fun-V1.5-5b-InP | safetensors | 3 | `--source` |
@@ -116,7 +134,17 @@ license="other",                    # SPDX id; "other" identifies nothing alone
 license_name="ltx-2-community-license-agreement",
 license_link="https://github.com/Lightricks/LTX-2/blob/main/LICENSE",
 license_file="LICENSE",             # or a tuple: ("LICENSE", "Notice.txt")
+license_source="github:Lightricks/LTX-2/LICENSE",  # when upstream ships none on the Hub
 ```
+
+An upstream that publishes its agreement outside the Hub — LTX-2.5 has no
+`LICENSE` file in its repo — declares `license_source`. The provenance record
+is unchanged in shape: a GitHub repo has an id and a commit as a Hub repo has
+an id and a revision. Where the weights themselves carry the text, as LTX's do
+in their safetensors `__metadata__`, the recipe checks the copy against it and
+refuses to convert on a mismatch. Not every checkpoint carries it — two of
+LTX-2.5's nine files do not — so the check runs per file where present, and
+the whole run aborts only if nothing in it was ever verified.
 
 `license_file` is the one with teeth. The community licences (LTX-2.x §3.2,
 Tencent Hunyuan) oblige whoever distributes a derivative to give the recipient
