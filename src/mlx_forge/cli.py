@@ -250,7 +250,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Delta upload: skip files whose names already exist on the remote repo. "
             "Useful after `convert --skip-shared` to push only the new variant. "
-            "Refuses to run if the repo doesn't exist."
+            "Refuses to run if the repo doesn't exist. Ignores --private and --collection."
         ),
     )
 
@@ -393,7 +393,7 @@ def _card_file_listing(api, repo_id: str, model_dir, *, card_only: bool = False)
     truth: a local directory holding a different build would otherwise publish
     sizes that do not match the repo.
     """
-    from huggingface_hub.errors import HfHubHTTPError, RepositoryNotFoundError
+    from huggingface_hub.errors import GatedRepoError, HfHubHTTPError, RepositoryNotFoundError
 
     from .upload import iter_model_files
 
@@ -403,8 +403,22 @@ def _card_file_listing(api, repo_id: str, model_dir, *, card_only: bool = False)
         for sibling in info.siblings or []:
             if sibling.size is not None:
                 listing[sibling.rfilename] = sibling.size
-    except (RepositoryNotFoundError, HfHubHTTPError, OSError, ConnectionError):
-        pass  # new repo, or offline: the local directory is the whole story
+    except GatedRepoError as e:
+        if card_only:
+            # A gated repo without access is not "new" — the local directory
+            # would invent a listing for a repo that already exists.
+            print(f"ERROR: --card-only could not list {repo_id}: {e}")
+            raise SystemExit(1)
+        # A full upload is about to push the local files anyway.
+    except RepositoryNotFoundError:
+        pass  # new repo: the local directory is the whole story
+    except (HfHubHTTPError, OSError, ConnectionError) as e:
+        if card_only:
+            # This mode publishes nothing local, so a listing it cannot read
+            # is a listing it must not invent from the local directory.
+            print(f"ERROR: --card-only could not list {repo_id}: {e}")
+            raise SystemExit(1)
+        # A full upload is about to push the local files anyway.
 
     if card_only and listing:
         # ...except the files this mode does push. A refresh carries the licence
@@ -433,13 +447,33 @@ def _show_card_diff(api, repo_id: str, card: str, model_dir, *, card_only: bool)
     import re
 
     from huggingface_hub import hf_hub_download
+    from huggingface_hub.errors import (
+        EntryNotFoundError,
+        GatedRepoError,
+        HfHubHTTPError,
+        LocalEntryNotFoundError,
+        RepositoryNotFoundError,
+    )
 
     try:
         published = open(hf_hub_download(repo_id, "README.md")).read()
         etat = f"against the card published at {repo_id}"
-    except Exception:
+    except (GatedRepoError, LocalEntryNotFoundError) as e:
+        # GatedRepoError subclasses RepositoryNotFoundError, and an offline
+        # failure is wrapped in LocalEntryNotFoundError (a subclass of
+        # EntryNotFoundError) — both must be caught before the "genuinely
+        # new" clause below, or a gated/offline repo is reported as new.
+        print(f"ERROR: could not read the published card of {repo_id}: {e}")
+        raise SystemExit(1)
+    except (EntryNotFoundError, RepositoryNotFoundError):
+        # Genuinely new: no repo, or a repo with no README yet.
         published = ""
         etat = f"{repo_id} has no card yet — everything below is new"
+    except (HfHubHTTPError, OSError, ConnectionError) as e:
+        # Anything else (auth, gating, network) is not "new"; a diff against
+        # an empty string would then claim "no content would be lost".
+        print(f"ERROR: could not read the published card of {repo_id}: {e}")
+        raise SystemExit(1)
 
     print(f"\n{'=' * 60}")
     print(f"DRY RUN — nothing is written or uploaded ({etat})")

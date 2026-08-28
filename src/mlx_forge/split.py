@@ -6,6 +6,7 @@ to be loaded independently without pulling the entire file into memory.
 
 from __future__ import annotations
 
+import gc
 import json
 from collections import defaultdict
 from pathlib import Path
@@ -14,7 +15,7 @@ from typing import cast
 import mlx.core as mx
 from tqdm import tqdm
 
-from .quantize import format_bytes
+from .quantize import _materialize, format_bytes
 
 
 def split_model(
@@ -45,17 +46,23 @@ def split_model(
     all_weights = cast(dict[str, mx.array], mx.load(str(unified_path)))
     print(f"Loaded {len(all_weights)} tensors")
 
-    # Group weights by output file
-    file_weights: dict[str, dict[str, mx.array]] = defaultdict(dict)
-    unmatched: dict[str, mx.array] = {}
+    # Group weights by output file. Nested so that key/value fall out of
+    # scope with this function's frame instead of lingering as split_model
+    # locals holding the last-popped tensor alive for the rest of the run.
+    def _group(source: dict[str, mx.array]) -> tuple[dict[str, dict[str, mx.array]], dict]:
+        grouped: dict[str, dict[str, mx.array]] = defaultdict(dict)
+        leftover: dict[str, mx.array] = {}
+        for key in list(source):
+            value = source.pop(key)
+            prefix = key.split(".")[0]
+            if prefix in component_map:
+                grouped[component_map[prefix]][key] = value
+            else:
+                leftover[key] = value
+        return grouped, leftover
 
-    for key, value in all_weights.items():
-        prefix = key.split(".")[0]
-        if prefix in component_map:
-            output_file = component_map[prefix]
-            file_weights[output_file][key] = value
-        else:
-            unmatched[key] = value
+    file_weights, unmatched = _group(all_weights)
+    del all_weights
 
     if unmatched:
         if fallback_filename:
@@ -65,16 +72,27 @@ def split_model(
             file_weights[fallback_filename].update(unmatched)
         else:
             print(f"WARNING: {len(unmatched)} unmatched keys skipped")
+    unmatched.clear()
 
-    # Save each component
+    # Save each component. Popping every key out of all_weights above (and
+    # deleting it) means file_weights holds the only references left, so
+    # weights.clear() below drops the last reference and gc.collect() +
+    # mx.clear_cache() actually reclaim the component's memory.
     result = {}
     sorted_items = sorted(file_weights.items())
     for filename, weights in tqdm(sorted_items, desc="Saving components", leave=False):
         output_path = model_dir / filename
         total_bytes = sum(v.nbytes for v in weights.values())
         tqdm.write(f"Saving: {filename} ({len(weights)} tensors, {format_bytes(total_bytes)})")
+        # Lazy (mmap-backed) tensors save as zeros if anything evicts their
+        # buffers first — the same rule every recipe's process_component
+        # follows; the mmap has kept this path safe by luck, not by design.
+        _materialize(*weights.values())
         mx.save_safetensors(str(output_path), weights)
         result[filename] = len(weights)
+        weights.clear()
+        gc.collect()
+        mx.clear_cache()
 
     # Write marker file — merge with an existing manifest rather than clobber
     # it: convert writes recipe identity, gating and licence provenance into
