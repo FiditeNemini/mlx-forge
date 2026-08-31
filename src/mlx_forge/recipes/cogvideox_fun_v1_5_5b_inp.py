@@ -35,6 +35,7 @@ import mlx.core as mx
 
 from ..convert import (
     add_common_convert_args,
+    add_source_arg,
     copy_required_files,
     default_output_dir,
     download_hf_files,
@@ -42,11 +43,14 @@ from ..convert import (
     load_safetensors,
     load_weights,
     print_output_summary,
+    process_component,
+    quantization_manifest_fields,
     quantize_component,
+    source_download_dir,
     write_split_model,
 )
 from ..metadata import RecipeMetadata
-from ..quantize import _materialize, read_quantize_config, write_quantize_config
+from ..quantize import read_quantize_config, write_quantize_config
 from ..transpose import transpose_conv
 from ..validate import (
     count_layer_indices,
@@ -276,24 +280,17 @@ def _convert_transformer(
 
     print(f"\nProcessing {len(weights)} transformer keys...")
     t0 = time.monotonic()
-    tf_output: dict[str, mx.array] = {}
-    for key in weights:
-        new_key = sanitize_transformer_key(key)
-        if new_key is None:
-            continue
-        weight = weights[key]
-        weight = maybe_transpose(new_key, weight, "transformer")
-        _materialize(weight)
-        tf_output[f"transformer.{new_key}"] = weight
-
-    count = len(tf_output)
-    out_file = "transformer.safetensors"
-    print(f"  Saving {count} weights to {out_file}...")
-    mx.save_safetensors(str(output_dir / out_file), tf_output)
-    elapsed = time.monotonic() - t0
-    print(f"  Done: {count} weights saved in {elapsed:.1f}s")
-
-    del tf_output, weights
+    count = process_component(
+        weights,
+        "transformer",
+        list(weights),
+        output_dir,
+        "transformer",
+        sanitizer=sanitize_transformer_key,
+        transform=maybe_transpose,
+    )
+    print(f"  Done: {count} weights saved in {time.monotonic() - t0:.1f}s")
+    del weights
     gc.collect()
     mx.clear_cache()
     return count
@@ -321,24 +318,17 @@ def _convert_text_encoder(
 
     print(f"\nProcessing {len(weights)} text_encoder keys...")
     t0 = time.monotonic()
-    te_output: dict[str, mx.array] = {}
-    for key in weights:
-        new_key = sanitize_text_encoder_key(key)
-        if new_key is None:
-            continue
-        weight = weights[key]
-        # T5 encoder has no conv layers — all weights pass through unchanged
-        _materialize(weight)
-        te_output[f"text_encoder.{new_key}"] = weight
-
-    count = len(te_output)
-    out_file = "text_encoder.safetensors"
-    print(f"  Saving {count} weights to {out_file}...")
-    mx.save_safetensors(str(output_dir / out_file), te_output)
-    elapsed = time.monotonic() - t0
-    print(f"  Done: {count} weights saved in {elapsed:.1f}s")
-
-    del te_output, weights
+    # T5 encoder has no conv layers — all weights pass through unchanged
+    count = process_component(
+        weights,
+        "text_encoder",
+        list(weights),
+        output_dir,
+        "text_encoder",
+        sanitizer=sanitize_text_encoder_key,
+    )
+    print(f"  Done: {count} weights saved in {time.monotonic() - t0:.1f}s")
+    del weights
     gc.collect()
     mx.clear_cache()
     return count
@@ -369,24 +359,17 @@ def _convert_vae(
 
     print(f"\nProcessing {len(weights)} VAE keys...")
     t0 = time.monotonic()
-    vae_output: dict[str, mx.array] = {}
-    for key in weights:
-        new_key = sanitize_vae_key(key)
-        if new_key is None:
-            continue
-        weight = weights[key]
-        weight = maybe_transpose(new_key, weight, "vae")
-        _materialize(weight)
-        vae_output[f"vae.{new_key}"] = weight
-
-    count = len(vae_output)
-    out_file = "vae.safetensors"
-    print(f"  Saving {count} weights to {out_file}...")
-    mx.save_safetensors(str(output_dir / out_file), vae_output)
-    elapsed = time.monotonic() - t0
-    print(f"  Done: {count} weights saved in {elapsed:.1f}s")
-
-    del vae_output, weights
+    count = process_component(
+        weights,
+        "vae",
+        list(weights),
+        output_dir,
+        "vae",
+        sanitizer=sanitize_vae_key,
+        transform=maybe_transpose,
+    )
+    print(f"  Done: {count} weights saved in {time.monotonic() - t0:.1f}s")
+    del weights
     gc.collect()
     mx.clear_cache()
     return count
@@ -448,7 +431,7 @@ def convert(args) -> None:
 
     # Determine source: local path or HF download
     local_source = Path(args.source) if args.source else None
-    download_dir = Path("models") / "cogvideox-fun-v1.5-5b-inp-src"
+    download_dir = source_download_dir(output_dir)
 
     if not local_source:
         # Download all files from HuggingFace
@@ -493,7 +476,8 @@ def convert(args) -> None:
     # Copy pipeline config files (tokenizer, scheduler, model_index)
     copy_pipeline_configs(source_dir, output_dir)
 
-    # Split model manifest
+    # Split model manifest — written once, below, after the optional
+    # quantization so `quantized` reflects what actually happened.
     split_info: dict = {
         "format": "split",
         "components": COMPONENTS,
@@ -504,7 +488,6 @@ def convert(args) -> None:
             "text_encoder": "T5-v1.1-XXL encoder (24 layers, d_model=4096).",
         },
     }
-    write_split_model(output_dir, split_info)
 
     # -----------------------------------------------------------------------
     # 5. Optional quantization (transformer + text_encoder, skip vae)
@@ -530,10 +513,12 @@ def convert(args) -> None:
             skip_components=sorted(skip),
         )
 
-        split_info["quantized"] = True
-        split_info["quantization_bits"] = args.bits
-        split_info["quantization_group_size"] = args.group_size
-        write_split_model(output_dir, split_info)
+    split_info.update(
+        quantization_manifest_fields(
+            quantized=args.quantize, bits=args.bits, group_size=args.group_size
+        )
+    )
+    write_split_model(output_dir, split_info)
 
     # -----------------------------------------------------------------------
     # Summary
@@ -754,10 +739,8 @@ def validate(args) -> None:
 
 def add_convert_args(parser) -> None:
     """Add CogVideoX-Fun convert arguments to a parser."""
-    parser.add_argument(
-        "--source",
-        type=str,
-        default=None,
+    add_source_arg(
+        parser,
         help="Path to local model directory (skips HF download). "
         "Must contain transformer/, text_encoder/, and vae/ subdirectories.",
     )

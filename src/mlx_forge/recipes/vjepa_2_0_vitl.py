@@ -65,16 +65,19 @@ import mlx.core as mx
 
 from ..convert import (
     add_common_convert_args,
+    add_source_arg,
     default_output_dir,
     fmt_size,
     load_safetensors,
     load_torch_state_dict,
     print_output_summary,
+    process_component,
+    quantization_manifest_fields,
     quantize_component,
     write_split_model,
 )
 from ..metadata import RecipeMetadata
-from ..quantize import _materialize, read_quantize_config, write_quantize_config
+from ..quantize import read_quantize_config, write_quantize_config
 from ..transpose import transpose_conv
 from ..validate import (
     count_layer_indices,
@@ -344,20 +347,21 @@ def _process_encoder(source_path: Path, output_dir: Path) -> int:
 
     raw = _load_pt_encoder(source_path)
     print(f"  Sanitizing {len(raw)} keys...")
-    output: dict[str, mx.array] = {}
-    for key, weight in raw.items():
-        new_key = _sanitize_encoder_key(key)
-        weight = _encoder_transform(new_key, weight)
-        _materialize(weight)
-        output[f"encoder.{new_key}"] = weight
 
-    count = len(output)
-    out_path = output_dir / "encoder.safetensors"
-    print(f"  Saving {count} weights → {out_path.name}...")
-    mx.save_safetensors(str(out_path), output)
+    def _transform(new_key: str, weight: mx.array, _component: str) -> mx.array:
+        return _encoder_transform(new_key, weight)
+
+    count = process_component(
+        raw,
+        "encoder",
+        list(raw),
+        output_dir,
+        "encoder",
+        sanitizer=_sanitize_encoder_key,
+        transform=_transform,
+    )
     print(f"  Done in {time.monotonic() - t0:.1f}s")
-
-    del output, raw
+    del raw
     gc.collect()
     mx.clear_cache()
     return count
@@ -378,19 +382,17 @@ def _process_predictor(source_path: Path, output_dir: Path) -> int:
         return 0
 
     print(f"  Sanitizing {len(raw)} keys...")
-    output: dict[str, mx.array] = {}
-    for key, weight in raw.items():
-        new_key = _sanitize_encoder_key(key)  # strips `module.backbone.`
-        _materialize(weight)  # no transpose — predictor has no conv weights
-        output[f"predictor.{new_key}"] = weight
-
-    count = len(output)
-    out_path = output_dir / "predictor.safetensors"
-    print(f"  Saving {count} weights → {out_path.name}...")
-    mx.save_safetensors(str(out_path), output)
+    # strips `module.backbone.`; no transpose — predictor has no conv weights
+    count = process_component(
+        raw,
+        "predictor",
+        list(raw),
+        output_dir,
+        "predictor",
+        sanitizer=_sanitize_encoder_key,
+    )
     print(f"  Done in {time.monotonic() - t0:.1f}s")
-
-    del output, raw
+    del raw
     gc.collect()
     mx.clear_cache()
     return count
@@ -418,19 +420,16 @@ def _process_probe(
     print(f"  Detected classifier heads: {heads}")
 
     print(f"  Sanitizing {len(raw)} keys...")
-    output: dict[str, mx.array] = {}
-    for key, weight in raw.items():
-        new_key = _sanitize_probe_key(key)
-        _materialize(weight)
-        output[f"{comp_name}.{new_key}"] = weight
-
-    count = len(output)
-    out_path = output_dir / f"{comp_name}.safetensors"
-    print(f"  Saving {count} weights → {out_path.name}...")
-    mx.save_safetensors(str(out_path), output)
+    count = process_component(
+        raw,
+        comp_name,
+        list(raw),
+        output_dir,
+        comp_name,
+        sanitizer=_sanitize_probe_key,
+    )
     print(f"  Done in {time.monotonic() - t0:.1f}s")
-
-    del output, raw
+    del raw
     gc.collect()
     mx.clear_cache()
     return count, heads
@@ -546,11 +545,8 @@ def convert(args) -> None:  # noqa: C901
     split_info: dict = {
         "format": "split",
         "components": {comp: f"{comp}.safetensors" for comp in components},
-        "quantized": bool(args.quantize),
         **METADATA.as_split_fields(),
     }
-    write_split_model(output_dir, split_info)
-    print("Saved split_model.json")
 
     # Optional quantization
     if args.quantize:
@@ -586,6 +582,14 @@ def convert(args) -> None:  # noqa: C901
             skip_keys_predictor=list(_PREDICTOR_SKIP_QUANT),
             skip_keys_probe=list(_PROBE_SKIP_QUANT),
         )
+
+    split_info.update(
+        quantization_manifest_fields(
+            quantized=args.quantize, bits=args.bits, group_size=args.group_size
+        )
+    )
+    write_split_model(output_dir, split_info)
+    print("Saved split_model.json")
 
     # Summary
     print(f"\n{'=' * 60}")
@@ -877,11 +881,10 @@ def validate(args) -> None:  # noqa: C901
 
 def add_convert_args(parser) -> None:
     """Register convert arguments for the vjepa-2.0-vitl recipe."""
-    parser.add_argument(
-        "--source",
-        type=str,
-        default=None,
+    add_source_arg(
+        parser,
         help="Path to vitl.pt (V-JEPA 2.0 ViT-L encoder checkpoint). Required.",
+        required=True,
     )
     parser.add_argument(
         "--ssv2-source",

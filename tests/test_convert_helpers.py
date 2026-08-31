@@ -17,6 +17,9 @@ RECIPE_NAMES = sorted(AVAILABLE_RECIPES)
 #: Recipes whose --bits default deliberately differs from the 8-bit norm.
 BITS_DEFAULT_OVERRIDES = {"ernie-image-pe": 4}
 
+#: Recipes whose --source is parser-required (no HF fallback exists yet).
+SOURCE_REQUIRED = {"vjepa-2.0-vitl", "vjepa-2.1-vitl"}
+
 
 class TestAddCommonConvertArgs:
     def _parse(self, **kwargs):
@@ -67,7 +70,8 @@ def test_every_recipe_exposes_the_common_block(recipe_name: str):
     module = importlib.import_module(AVAILABLE_RECIPES[recipe_name])
     parser = argparse.ArgumentParser()
     module.add_convert_args(parser)
-    ns = parser.parse_args([])
+    argv = ["--source", "/x"] if recipe_name in SOURCE_REQUIRED else []
+    ns = parser.parse_args(argv)
 
     assert ns.output is None
     assert ns.quantize is False
@@ -326,3 +330,70 @@ class TestCopyRequiredFilesKeepTree:
         assert (out / "tokenizer" / "tokenizer.json").exists()
         assert (out / "scheduler_scheduler_config.json").exists()
         assert (out / "model_index.json").exists()
+
+
+class TestAddSourceArg:
+    def test_registers_source(self):
+        import argparse
+
+        from mlx_forge.convert import add_source_arg
+
+        parser = argparse.ArgumentParser()
+        add_source_arg(parser, help="local dir")
+        assert parser.parse_args(["--source", "/x"]).source == "/x"
+        assert parser.parse_args([]).source is None
+
+    def test_alias_fills_source_and_warns_once(self, capsys):
+        import argparse
+
+        from mlx_forge.convert import add_source_arg
+
+        parser = argparse.ArgumentParser()
+        add_source_arg(parser, help="ckpt", aliases=("--checkpoint",))
+        args = parser.parse_args(["--checkpoint", "/y"])
+        assert args.source == "/y"
+        err = capsys.readouterr().err
+        assert "--checkpoint is deprecated" in err and "--source" in err
+
+    def test_alias_is_hidden_from_help(self):
+        import argparse
+
+        from mlx_forge.convert import add_source_arg
+
+        parser = argparse.ArgumentParser()
+        add_source_arg(parser, help="ckpt", aliases=("--checkpoint",))
+        assert "--checkpoint" not in parser.format_help()
+
+
+class TestSourceDownloadDir:
+    def test_sibling_of_output(self):
+        from pathlib import Path
+
+        from mlx_forge.convert import source_download_dir
+
+        assert source_download_dir(Path("/m/x-mlx")) == Path("/m/x-mlx-src")
+        assert source_download_dir(Path("models/y-mlx-q8")) == Path("models/y-mlx-q8-src")
+
+
+class TestQuantizationManifestFields:
+    def test_unquantized(self):
+        from mlx_forge.convert import quantization_manifest_fields
+
+        assert quantization_manifest_fields(quantized=False) == {"quantized": False}
+
+    def test_quantized_has_the_three_keys(self):
+        from mlx_forge.convert import quantization_manifest_fields
+
+        assert quantization_manifest_fields(quantized=True, bits=8, group_size=64) == {
+            "quantized": True,
+            "quantization_bits": 8,
+            "quantization_group_size": 64,
+        }
+
+    def test_quantized_requires_bits_and_group_size(self):
+        import pytest
+
+        from mlx_forge.convert import quantization_manifest_fields
+
+        with pytest.raises(ValueError):
+            quantization_manifest_fields(quantized=True)

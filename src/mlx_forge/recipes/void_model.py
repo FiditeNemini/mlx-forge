@@ -33,16 +33,20 @@ import mlx.core as mx
 
 from ..convert import (
     add_common_convert_args,
+    add_source_arg,
     default_output_dir,
     download_hf_files,
     fmt_size,
     load_safetensors,
     print_output_summary,
+    process_component,
+    quantization_manifest_fields,
     quantize_component,
+    source_download_dir,
     write_split_model,
 )
 from ..metadata import RecipeMetadata
-from ..quantize import _materialize, read_quantize_config, write_quantize_config
+from ..quantize import read_quantize_config, write_quantize_config
 
 REPO_ID = "netflix/void-model"
 
@@ -160,24 +164,20 @@ def _convert_pass(
 
     print(f"\nProcessing {len(weights)} keys...")
     t0 = time.monotonic()
-    output: dict[str, mx.array] = {}
-    for key in weights:
-        new_key = sanitize_key(key)
-        if new_key is None:
-            continue
-        weight = weights[key]
-        # All VOID weights are Linear (2D) or bias/norm (1D) -- no conv transposition needed
-        _materialize(weight)
-        output[new_key] = weight
+    # All VOID weights are Linear (2D) or bias/norm (1D) -- no conv transposition needed.
+    # component_prefix=None: the published packs hold bare keys.
+    count = process_component(
+        weights,
+        pass_name,
+        list(weights),
+        output_dir,
+        None,
+        sanitizer=sanitize_key,
+        output_filename=pass_filename,
+    )
+    print(f"  Done: {count} weights saved in {time.monotonic() - t0:.1f}s")
 
-    count = len(output)
-    out_file = pass_filename
-    print(f"  Saving {count} weights to {out_file}...")
-    mx.save_safetensors(str(output_dir / out_file), output)
-    elapsed = time.monotonic() - t0
-    print(f"  Done: {count} weights saved in {elapsed:.1f}s")
-
-    del output, weights
+    del weights
     gc.collect()
     mx.clear_cache()
     return count
@@ -209,7 +209,7 @@ def convert(args) -> None:
             raise SystemExit(1)
     else:
         # Download from HuggingFace
-        source_dir = Path("models") / "void-model-src"
+        source_dir = source_download_dir(output_dir)
         print(f"\nDownloading from {REPO_ID}...")
         download_hf_files(REPO_ID, PASS_FILES, source_dir)
 
@@ -241,18 +241,6 @@ def convert(args) -> None:
         json.dump(config, f, indent=2)
     print("\nSaved config.json")
 
-    # Without this, `mlx-forge upload models/void-model-mlx` cannot derive the
-    # repo name and refuses to run unless --repo-id is passed by hand.
-    write_split_model(
-        output_dir,
-        {
-            "format": "split",
-            "components": [Path(f).stem for f in PASS_FILES],
-            **METADATA.as_split_fields(),
-        },
-    )
-    print("Saved split_model.json")
-
     # -----------------------------------------------------------------------
     # Optional quantization (transformer weights only)
     # -----------------------------------------------------------------------
@@ -268,20 +256,21 @@ def convert(args) -> None:
 
         write_quantize_config(output_dir, bits=args.bits, group_size=args.group_size)
 
-        # The manifest above is written before quantizing, so it says nothing
-        # about it. Every published void repo went out that way, leaving the
-        # card unable to state its own width. Record it now that it is known.
-        write_split_model(
-            output_dir,
-            {
-                "format": "split",
-                "components": [Path(f).stem for f in PASS_FILES],
-                "quantized": True,
-                "quantization_bits": args.bits,
-                "quantization_group_size": args.group_size,
-                **METADATA.as_split_fields(),
-            },
-        )
+    # Without this, `mlx-forge upload models/void-model-mlx` cannot derive the
+    # repo name and refuses to run unless --repo-id is passed by hand. Written
+    # once, after quantizing, so `quantized` reflects what actually happened.
+    write_split_model(
+        output_dir,
+        {
+            "format": "split",
+            "components": [Path(f).stem for f in PASS_FILES],
+            **quantization_manifest_fields(
+                quantized=args.quantize, bits=args.bits, group_size=args.group_size
+            ),
+            **METADATA.as_split_fields(),
+        },
+    )
+    print("Saved split_model.json")
 
     # -----------------------------------------------------------------------
     # Summary
@@ -415,10 +404,8 @@ def validate(args) -> None:
 
 def add_convert_args(parser) -> None:
     """Add VOID model convert arguments to a parser."""
-    parser.add_argument(
-        "--source",
-        type=str,
-        default=None,
+    add_source_arg(
+        parser,
         help="Path to directory containing void_pass1.safetensors and void_pass2.safetensors "
         "(required).",
     )
